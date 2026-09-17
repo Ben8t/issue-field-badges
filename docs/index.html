@@ -373,7 +373,7 @@
         <div class="card"><h3>Projects views too</h3><p>The same badges appear on GitHub Projects: after the issue number in the table layout, under the title on board cards. A field the view already shows, as a column, a card field or the field the board is grouped by, is skipped so nothing appears twice. Draft items and pull requests are left alone.</p></div>
         <div class="card"><h3>Issue age, if you want it</h3><p>An optional gray badge shows how long ago each issue was created, in months, weeks or days, and turns yellow once an issue has been open longer than a threshold you set, 90 days by default. Off by default, one checkbox in the settings.</p></div>
         <div class="card"><h3>Pull request badges</h3><p>On the pull request list and on Projects views that contain pull requests: whether the author is a first-time contributor, external, a contributor, a collaborator, a member or a bot, plus optional badges for forks, size and merge state.</p></div>
-        <div class="card"><h3>Epics as a board</h3><p>An issue with sub-issues gets a List and Kanban toggle. The board groups the sub-issues by any field they carry and orders each column by another, so an epic reads like a project without being one.</p></div>
+        <div class="card"><h3>Epics as a board</h3><p>An issue with sub-issues gets a List and Kanban toggle. The board groups the sub-issues by any field they carry, orders each column by another, and filters everything down to one value of a third. Drag a card to another column and the field value, or the issue state, is written back to GitHub.</p></div>
         <div class="card"><h3>Pinned epics</h3><p>A pin button in GitHub's top bar keeps your epics one click away: copy their reference, or make the issue you are looking at a sub-issue of one. Optional as well.</p></div>
         <div class="card"><h3>Clickable</h3><p>Each badge links to the repository's issue search filtered by that field value, the same way GitHub's own field badges do.</p></div>
         <div class="card"><h3>Looks native</h3><p>Badges reuse GitHub's own colour tokens, so they match light and dark themes and every colour blindness setting GitHub offers.</p></div>
@@ -412,13 +412,15 @@
       </div>
 
       <h3 style="margin-top:28px">Epic kanban</h3>
-      <p class="muted" style="font-size:14px">On an issue with sub-issues, the toggle above the list swaps it for a board. You choose the field that forms the columns and the field that orders the cards inside each one; the columns follow the order your organization gave the field's options.</p>
+      <p class="muted" style="font-size:14px">On an issue with sub-issues, the toggle above the list swaps it for a board. You choose the field that forms the columns, the field that orders the cards inside each one, and a value to filter everything down to; the columns follow the order your organization gave the field's options. Dragging a card to another column writes the new value back to GitHub.</p>
       <div class="mock-kanban gh-card" id="ex-kanban" style="max-width:820px">
         <div class="mock-kanban-bar">
           <span class="seg"><span>List</span><span class="on">Kanban</span></span>
           <span class="ctl">Columns <span class="select">Stage <span aria-hidden="true">&#9662;</span></span></span>
           <span class="ctl">Sort <span class="select">Priority <span aria-hidden="true">&#9662;</span></span></span>
           <span class="select dir" aria-hidden="true">&#8593;</span>
+          <span class="ctl">Filter <span class="select">Priority <span aria-hidden="true">&#9662;</span></span></span>
+          <span class="select">Any value <span aria-hidden="true">&#9662;</span></span>
           <span class="spacer"></span>
           <span>8 sub-issues</span>
         </div>
@@ -489,7 +491,7 @@
         <div class="step"><h3>Detect the rows</h3><p>A content script on <code>github.com</code> watches the page for sub-issue lists, project table rows and board cards, and collects the issue links: owner, repository, number.</p></div>
         <div class="step"><h3>One batched query</h3><p>The background script (a service worker on Chromium, an event page on Firefox) groups those issues by repository and runs one GraphQL query per batch of 60 using <code>Issue.issueFieldValues</code> and <code>createdAt</code>, with your token. Pull request lists get the same treatment with <code>authorAssociation</code>, size and <code>mergeStateStatus</code>.</p></div>
         <div class="step"><h3>Keep what you chose</h3><p>From the returned values it keeps only the fields you configured, in your order, and hands back <code>field</code>, <code>value</code>, <code>colour</code> and the creation date per issue.</p></div>
-        <div class="step"><h3>Or draw a board</h3><p>When the kanban toggle is on, the sub-issues of the open issue are read in one <code>subIssues</code> query with every field value they carry, and drawn as columns in place of the list. Grouping and ordering happen in the page, so switching either is instant.</p></div>
+        <div class="step"><h3>Or draw a board</h3><p>When the kanban toggle is on, the sub-issues of the open issue are read in one <code>subIssues</code> query with every field value they carry, and drawn as columns in place of the list. Grouping, ordering and filtering happen in the page, so switching any of them is instant. Dropping a card in another column is the one write: <code>createIssueFieldValue</code> for a field, <code>closeIssue</code> or <code>reopenIssue</code> for the state, with the card moving back if GitHub refuses.</p></div>
         <div class="step"><h3>Render badges</h3><p>The content script inserts a badge per value right after the issue type badge, after the issue number in project tables, or under the title on board cards, plus the age badge when enabled. It re-renders when GitHub redraws the page.</p></div>
       </div>
       <pre><code>{ r0: repository(owner: "org", name: "repo") {
@@ -593,7 +595,7 @@
       <h2>Privacy</h2>
       <div class="grid">
         <div class="card"><h3>What is stored</h3><p>Your token, your field list, your preferences and your pinned issues, in <code>chrome.storage.local</code>, on your device. Uninstalling removes all of it.</p></div>
-        <div class="card"><h3>What is sent</h3><p>Repository owner, name and issue number of the issues on the page you are viewing, to <code>api.github.com</code>, with your token in the header. The only write is the sub-issue link you click yourself. Nothing else, to no one else.</p></div>
+        <div class="card"><h3>What is sent</h3><p>Repository owner, name and issue number of the issues on the page you are viewing, to <code>api.github.com</code>, with your token in the header. The only writes are the sub-issue link you click and the card you drag on the board. Nothing else, to no one else.</p></div>
         <div class="card"><h3>What is not</h3><p>No analytics, telemetry, crash reports, cookies or third-party services. The full policy is in <a href="https://github.com/MilosPaunovic/github-issue-toolkit/blob/main/PRIVACY.md">PRIVACY.md</a>.</p></div>
       </div>
     </div>
@@ -605,7 +607,8 @@
       <details><summary>Why does it need a token at all?</summary><p>Because organization-only field values are not in the page HTML; GitHub loads them through its authenticated API only for members. A token is the only way an extension can read them. If your organization sets fields to "Public" visibility, a token is still required by the API, but any account's token will do.</p></details>
       <details><summary>Where exactly do the badges appear?</summary><p>On the sub-issues list of an issue page, including nested sub-issues once you expand them, and on GitHub Projects views: table rows and board cards. Not on the plain issues list, where GitHub already shows pinned field values.</p></details>
       <details><summary>What do the pull request badges mean?</summary><p><em>First-time contributor</em> is the author's first pull request to this repository, <em>First PR on GitHub</em> their first anywhere, <em>External</em> someone with no previous contribution here, <em>Contributor</em> someone with merged work, <em>Collaborator</em> someone with write access, <em>Member</em> an organization member, <em>Bot</em> an app. The optional badges show a fork origin, added lines in green and removed lines in red, and the merge state GitHub reports: mergeable, behind base, blocked by rules, conflicts, or failing checks.</p></details>
-      <details><summary>Can I move a card on the kanban board?</summary><p>No. The board only reads, so a card cannot be dragged to another column; change the field on the issue itself and the board follows on the next load. Values are cached for five minutes, as everywhere else.</p></details>
+      <details><summary>Can I move a card on the kanban board?</summary><p>Yes, when the columns come from a single-select field or from the issue state: dragging a card writes the new field value, or closes and reopens the issue, through the GitHub API. Dropping it in the "No <em>field</em>" column clears the value. Columns made of types or assignees are not drop targets, and cards there cannot be dragged. Dragging needs a token with write access; it can be switched off in the settings, and nothing is ever written unless you drag.</p></details>
+      <details><summary>Can I see only one sprint, or only the P1 issues?</summary><p>Yes. The Filter control keeps one value of any dimension, the same ones the columns can be made of, and the count in the toolbar says how many of the epic's sub-issues are left. Filtering happens in the page, so the columns stay as they are and switching back costs nothing.</p></details>
       <details><summary>The kanban board says the epic has more sub-issues than it shows.</summary><p>The board loads up to 500 sub-issues, in pages of 100. Beyond that the count in the toolbar reads "500 of 640" and the rest is left out.</p></details>
       <details><summary>Does linking need extra permissions?</summary><p>Yes. Making an issue a sub-issue of a pinned epic writes to GitHub, so the token needs write access to the issue's repository: the <code>repo</code> scope on a classic token, or <code>Issues: Read and write</code> on a fine-grained one. Badges alone work with read-only access.</p></details>
       <details><summary>Sub-issues live in several repositories. Does that work?</summary><p>Yes. Rows are grouped by repository and fetched in one query. Each badge links to the search in its own repository.</p></details>

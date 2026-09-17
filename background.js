@@ -85,7 +85,7 @@ function fieldValueFragment(withOptions) {
   issueFieldValues(first: 30) {
     nodes {
       __typename
-      ... on IssueFieldSingleSelectValue { name color field { ... on IssueFieldSingleSelect { name ${withOptions ? "options { name color }" : ""} } } }
+      ... on IssueFieldSingleSelectValue { name color field { ... on IssueFieldSingleSelect { id name ${withOptions ? "options { id name color }" : ""} } } }
       ... on IssueFieldMultiSelectValue { value field { ... on IssueFieldMultiSelect { name } } }
       ... on IssueFieldTextValue { value field { ... on IssueFieldText { name } } }
       ... on IssueFieldNumberValue { value field { ... on IssueFieldNumber { name } } }
@@ -104,10 +104,11 @@ function fieldValue(node) {
   const value = node.__typename === "IssueFieldSingleSelectValue" ? node.name : node.value;
   if (value === null || value === undefined || value === "") return null;
   const options = node.field && Array.isArray(node.field.options)
-    ? node.field.options.map((o) => ({ name: o.name, color: o.color || "GRAY" }))
+    ? node.field.options.map((o) => ({ id: o.id, name: o.name, color: o.color || "GRAY" }))
     : null;
   return {
     field: fieldName,
+    fieldId: (node.field && node.field.id) || null,
     value: String(value),
     color: node.color || "GRAY",
     kind: node.__typename.replace(/^IssueField|Value$/g, "").toLowerCase(),
@@ -186,7 +187,7 @@ function subIssueQuery(ref, cursor, withOptions) {
         totalCount
         pageInfo { hasNextPage endCursor }
         nodes {
-          number title url state stateReason createdAt
+          id number title url state stateReason createdAt
           repository { nameWithOwner }
           issueType { name color }
           assignees(first: 3) { nodes { login avatarUrl } }
@@ -222,6 +223,7 @@ function subIssueItem(node) {
   }
   return {
     key: `${nameWithOwner}#${node.number}`,
+    id: node.id,
     owner,
     repo,
     number: node.number,
@@ -258,6 +260,37 @@ async function fetchEpic(ref) {
     cursor = connection.pageInfo.endCursor;
   }
   return { items, total, fields };
+}
+
+// Moving a card writes to GitHub: a single-select field value, or the state of the issue. Nothing else
+// is written, and only a drag the user performed asks for it.
+async function moveIssue(move) {
+  const { token } = await getSettings();
+  if (!token) return { error: "NO_TOKEN" };
+  const issueId = JSON.stringify(String(move.issueId || ""));
+  if (move.kind === "state") {
+    const mutation = move.state === "CLOSED"
+      ? `mutation { closeIssue(input: { issueId: ${issueId}, stateReason: COMPLETED }) { issue { number state } } }`
+      : `mutation { reopenIssue(input: { issueId: ${issueId} }) { issue { number state } } }`;
+    await graphql(token, mutation);
+    return { ok: true };
+  }
+  if (move.kind !== "field" || !move.fieldId) return { error: "This column cannot be a drop target." };
+  const fieldId = JSON.stringify(String(move.fieldId));
+  if (!move.optionId) {
+    await graphql(token, `mutation { deleteIssueFieldValue(input: { issueId: ${issueId}, fieldId: ${fieldId} }) { success } }`);
+    return { ok: true };
+  }
+  const set = `mutation { createIssueFieldValue(input: { issueId: ${issueId}, issueField: { fieldId: ${fieldId}, singleSelectOptionId: ${JSON.stringify(String(move.optionId))} } }) { issueFieldValue { __typename } } }`;
+  try {
+    await graphql(token, set);
+  } catch (err) {
+    // The input is a create-or-update, but a deployment that refuses to overwrite gets the value cleared first.
+    if (!/exist/i.test(err.message || "")) throw err;
+    await graphql(token, `mutation { deleteIssueFieldValue(input: { issueId: ${issueId}, fieldId: ${fieldId} }) { success } }`);
+    await graphql(token, set);
+  }
+  return { ok: true };
 }
 
 function issueSelection(ref) {
@@ -337,6 +370,9 @@ api.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   }
   if (msg.type === "fetchEpic") {
     return reply(fetchEpic(msg.issue), sendResponse);
+  }
+  if (msg.type === "moveIssue") {
+    return reply(moveIssue(msg.move || {}), sendResponse);
   }
   if (msg.type === "fetchIssueMeta") {
     return reply(fetchIssueMeta(msg.issue), sendResponse);

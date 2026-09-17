@@ -321,7 +321,7 @@
   align-items: center;
   flex-wrap: wrap;
   gap: 8px;
-  margin: 0 16px 8px;
+  margin: 16px 16px 10px;
   font: 12px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
   color: var(--fgColor-muted);
 }
@@ -371,6 +371,9 @@
   padding: 0;
   line-height: 24px;
 }
+.gsf-kanban-select[hidden] { display: none; }
+.gsf-kanban-note { color: var(--fgColor-muted); }
+.gsf-kanban-note[data-error="true"] { color: var(--fgColor-danger); }
 .gsf-kanban-status { margin-left: auto; }
 .gsf-kanban {
   display: flex;
@@ -445,6 +448,13 @@
   text-decoration: none !important;
 }
 .gsf-kanban-card:hover { border-color: var(--borderColor-accent-emphasis, var(--fgColor-accent)); }
+.gsf-kanban-card[draggable="true"] { cursor: grab; }
+.gsf-kanban-card[draggable="true"]:active { cursor: grabbing; }
+.gsf-kanban-card.gsf-dragging { opacity: 0.4; }
+.gsf-kanban-col.gsf-over {
+  border-color: var(--borderColor-accent-emphasis, var(--fgColor-accent));
+  box-shadow: inset 0 0 0 1px var(--borderColor-accent-emphasis, var(--fgColor-accent));
+}
 .gsf-kanban-card-head {
   display: flex;
   align-items: center;
