@@ -111,6 +111,8 @@
 
     const containers = document.querySelectorAll('[data-testid="sub-issues-issue-container"], [data-testid*="sub-issues"]');
     for (const container of containers) {
+      // A list the kanban board has replaced is hidden: its rows are not worth a query or a badge.
+      if (container.closest(".gsf-kanban-hidden")) continue;
       for (const li of container.querySelectorAll('li[role="treeitem"]')) {
         if (seen.has(li)) continue;
         seen.add(li);
@@ -575,10 +577,11 @@
 
   // `filterValue` is a column key, so "" is a real value (the items with nothing) and "*" means every value.
   let kanban = { on: false, groupBy: "", sortBy: "number", sortDir: "asc", filterBy: "", filterValue: "*" };
-  const epicCache = new Map(); // "owner/repo#n" -> { at, items, total, fields }
-  let epicPending = null;
+  const epicCache = new Map(); // "owner/repo#n" -> { at, items, total, fields, fieldDefs }
+  const epicPending = new Set();
   let barParts = null;
   let boardRoot = null;
+  let boardEpicKey = null;
   let boardSignature = null;
   let noteTimer = null;
   let dragKey = null;
@@ -604,7 +607,7 @@
   // The values that dimension actually holds, in column order, each with how many issues carry it.
   function filterValueChoices(data) {
     if (!kanban.filterBy) return [];
-    const columns = columnsOf(data.items, kanban.filterBy).filter((column) => column.items.length);
+    const columns = columnsOf(data.items, kanban.filterBy, data.fieldDefs).filter((column) => column.items.length);
     return [{ id: "*", label: "Any value" }, ...columns.map((column) => ({ id: column.key, label: `${column.label} (${column.items.length})` }))];
   }
 
@@ -613,11 +616,29 @@
     return item.values.find((v) => v.field.toLowerCase() === name) || null;
   }
 
+  // The fields the loaded sub-issues carry, with the id and option list of the single-select ones, taken
+  // once from the fetched payload: a board grouped by a field keeps its columns and stays droppable even
+  // after the last card holding a value for it is dragged into the "No field" column.
+  function fieldDefsOf(items) {
+    const defs = new Map();
+    for (const item of items) {
+      for (const v of item.values) {
+        const key = v.field.toLowerCase();
+        const def = defs.get(key) || { name: v.field, fieldId: null, options: [] };
+        if (!def.fieldId && v.fieldId) def.fieldId = v.fieldId;
+        if (!def.options.length && v.options && v.options.length) def.options = v.options;
+        defs.set(key, def);
+      }
+    }
+    return defs;
+  }
+
   // Everything the loaded sub-issues can be grouped or ordered by: the fields they carry, in the order the
   // settings list them so the field you care about comes first, then the ones GitHub gives every issue.
   function fieldChoices(data) {
     const configured = (data.fields || []).map((f) => f.toLowerCase());
     const found = new Map();
+    for (const [key, def] of data.fieldDefs || []) found.set(key, def.name);
     for (const item of data.items) {
       for (const v of item.values) if (!found.has(v.field.toLowerCase())) found.set(v.field.toLowerCase(), v.field);
     }
@@ -665,10 +686,11 @@
 
   // Columns in the order the organization defined the field's options, so a board grouped by a stage reads
   // left to right the way the stage does. Without an option list there is nothing to follow but the labels.
-  function columnsOf(items, groupBy) {
+  function columnsOf(items, groupBy, fieldDefs) {
     const columns = new Map();
     const none = { key: "", label: emptyLabel(groupBy), color: "GRAY", items: [] };
     const order = [];
+    let trimEmpty = false;
     const seed = (column) => {
       order.push(column.key);
       columns.set(column.key, column);
@@ -678,15 +700,17 @@
       seed({ key: "closed", label: "Closed", color: "PURPLE", state: "CLOSED", items: [] });
     } else if (groupBy.startsWith("field:")) {
       const name = groupBy.slice(6);
-      const defined = items.map((item) => valueOf(item, name)).find((v) => v && v.options && v.options.length);
+      const def = fieldDefs ? fieldDefs.get(name.toLowerCase()) : null;
+      const defined = def && def.options.length ? def : items.map((item) => valueOf(item, name)).find((v) => v && v.options && v.options.length);
       const options = defined ? defined.options : [];
       none.fieldId = defined ? defined.fieldId : null;
       none.options = options;
+      // Every option gets a column carrying the ids a drop needs, whatever the length of the list; whether
+      // the empty ones are drawn is decided below.
       for (const option of options) {
-        const column = { key: `value:${option.name}`, label: option.name, color: option.color || "GRAY", fieldId: none.fieldId, optionId: option.id, options, items: [] };
-        if (options.length <= EMPTY_COLUMN_LIMIT) seed(column);
-        else order.push(column.key);
+        seed({ key: `value:${option.name}`, label: option.name, color: option.color || "GRAY", fieldId: none.fieldId, optionId: option.id, options, items: [] });
       }
+      trimEmpty = options.length > EMPTY_COLUMN_LIMIT;
     }
     for (const item of items) {
       const bucket = bucketOf(item, groupBy);
@@ -697,7 +721,8 @@
       if (!columns.has(bucket.key)) columns.set(bucket.key, { ...bucket, items: [] });
       columns.get(bucket.key).items.push(item);
     }
-    const list = [...columns.values()];
+    let list = [...columns.values()];
+    if (trimEmpty) list = list.filter((column) => column.items.length);
     if (order.length) {
       const rank = (column) => (order.indexOf(column.key) < 0 ? order.length : order.indexOf(column.key));
       list.sort((a, b) => rank(a) - rank(b));
@@ -796,7 +821,7 @@
     if (!response || response.error) {
       Object.assign(item, before);
       setBoardNote(response && response.error === "NO_TOKEN"
-        ? "Moving a card needs a token with write access to the issue's repository."
+        ? "Add a GitHub token in the extension settings to move cards."
         : `Could not move #${item.number}: ${response ? response.error : "unknown error"}`, true);
       redrawBoard();
       return;
@@ -1125,7 +1150,7 @@
       return;
     }
     const root = boardRoot;
-    const columns = columnsOf(items, kanban.groupBy);
+    const columns = columnsOf(items, kanban.groupBy, data.fieldDefs);
     const movable = columns.some((column) => canDrop(column, kanban.groupBy));
     root.title = movable || !settings.kanbanDrag
       ? ""
@@ -1142,28 +1167,29 @@
   }
 
   async function loadEpic(list, epic) {
-    if (epicPending === epic.key) return;
-    epicPending = epic.key;
+    if (epicPending.has(epic.key)) return;
+    epicPending.add(epic.key);
     setBarStatus("Loading sub-issues...");
-    if (!boardRoot || !boardRoot.isConnected) showBoardMessage(list, "Loading sub-issues...");
+    if (!boardRoot || !boardRoot.isConnected || !boardRoot.childElementCount) showBoardMessage(list, "Loading sub-issues...");
     let response;
     try {
       response = await api.runtime.sendMessage({ type: "fetchEpic", issue: { owner: epic.owner, repo: epic.repo, number: epic.number } });
     } catch (err) {
       response = { error: err && err.message ? err.message : String(err) };
     } finally {
-      epicPending = null;
+      epicPending.delete(epic.key);
     }
     if (!response || response.error) {
       const message = response && response.error === "NO_TOKEN"
         ? "Add a GitHub token in the extension settings to show the board."
         : `Could not load the sub-issues: ${response ? response.error : "unknown error"}`;
-      epicCache.set(epic.key, { at: Date.now(), items: [], total: 0, fields: [], error: message });
+      epicCache.set(epic.key, { at: Date.now(), items: [], total: 0, fields: [], fieldDefs: new Map(), error: message });
       boardSignature = null;
       schedule();
       return;
     }
-    epicCache.set(epic.key, { at: Date.now(), items: response.items || [], total: response.total || 0, fields: response.fields || [] });
+    const items = response.items || [];
+    epicCache.set(epic.key, { at: Date.now(), items, total: response.total || 0, fields: response.fields || [], fieldDefs: fieldDefsOf(items) });
     boardSignature = null;
     schedule();
   }
@@ -1189,6 +1215,13 @@
       return;
     }
     list.classList.add("gsf-kanban-hidden");
+    if (boardEpicKey !== epic.key) {
+      // Another epic: the previous board and the choices its fields offered must not linger while this one loads.
+      boardEpicKey = epic.key;
+      boardSignature = null;
+      if (boardRoot) boardBody();
+      if (barParts) for (const select of [barParts.group, barParts.sort, barParts.filter, barParts.filterValue]) select.textContent = "";
+    }
     const hit = epicCache.get(epic.key);
     if (hit && Date.now() - hit.at < CACHE_TTL_MS) renderBoard(list, epic, hit);
     else {

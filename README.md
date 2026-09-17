@@ -6,7 +6,7 @@
 
 Browser extension that shows the values of your organization's custom GitHub **issue fields** as badges on every row of the **Sub-issues** list of an issue and on **Projects** views (table and board), plus the **age** of each issue and **pull request** badges that tell you who is behind each PR. An epic's sub-issues can be read as a **kanban board** grouped, ordered and filtered by the fields you choose, where dragging a card writes the new value back, and a small **Pinned issues** panel keeps your epics one click away so you can link the issue you are looking at to them. Works in Chrome, Edge, Brave and other Chromium browsers, and in Firefox.
 
-GitHub itself only shows the issue type there. This extension reads the field values through the GitHub GraphQL API, in batched queries covering all visible rows, across repositories. Everything is read-only except the optional linking of an issue to a pinned epic, which writes through the same API.
+GitHub itself only shows the issue type there. This extension reads the field values through the GitHub GraphQL API, in batched queries covering all visible rows, across repositories. Everything is read-only except two things you do yourself: linking an issue to a pinned epic, and dragging a card to another column on the kanban board, both of which write through the same API.
 
 ## What it looks like
 
