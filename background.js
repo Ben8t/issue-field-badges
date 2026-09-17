@@ -78,17 +78,42 @@ async function graphql(token, query, { partial = false } = {}) {
   return json.data || {};
 }
 
-const FIELD_VALUE_FRAGMENT = `
+// `withOptions` also asks for the options a single-select field defines, which gives the kanban board its
+// column order. Not every GitHub deployment knows that selection, so the caller falls back to asking without it.
+function fieldValueFragment(withOptions) {
+  return `
   issueFieldValues(first: 30) {
     nodes {
       __typename
-      ... on IssueFieldSingleSelectValue { name color field { ... on IssueFieldSingleSelect { name } } }
+      ... on IssueFieldSingleSelectValue { name color field { ... on IssueFieldSingleSelect { name ${withOptions ? "options { name color }" : ""} } } }
       ... on IssueFieldMultiSelectValue { value field { ... on IssueFieldMultiSelect { name } } }
       ... on IssueFieldTextValue { value field { ... on IssueFieldText { name } } }
       ... on IssueFieldNumberValue { value field { ... on IssueFieldNumber { name } } }
       ... on IssueFieldDateValue { value field { ... on IssueFieldDate { name } } }
     }
   }`;
+}
+
+const FIELD_VALUE_FRAGMENT = fieldValueFragment(false);
+
+// One field value as the content script wants it: the field name, the value as text, its colour, and,
+// for a single select, the options of the field in the order the organization defined them.
+function fieldValue(node) {
+  const fieldName = node.field && node.field.name;
+  if (!fieldName) return null;
+  const value = node.__typename === "IssueFieldSingleSelectValue" ? node.name : node.value;
+  if (value === null || value === undefined || value === "") return null;
+  const options = node.field && Array.isArray(node.field.options)
+    ? node.field.options.map((o) => ({ name: o.name, color: o.color || "GRAY" }))
+    : null;
+  return {
+    field: fieldName,
+    value: String(value),
+    color: node.color || "GRAY",
+    kind: node.__typename.replace(/^IssueField|Value$/g, "").toLowerCase(),
+    options
+  };
+}
 
 async function fetchFieldValues(issues) {
   const { token, fields, ageEnabled } = await getSettings();
@@ -131,11 +156,9 @@ async function fetchFieldValues(issues) {
       if (issueNode.createdAt) created[key] = issueNode.createdAt;
       const values = [];
       for (const node of (issueNode.issueFieldValues && issueNode.issueFieldValues.nodes) || []) {
-        const fieldName = node.field && node.field.name;
-        if (!fieldName || !wanted.has(fieldName.toLowerCase())) continue;
-        const value = node.__typename === "IssueFieldSingleSelectValue" ? node.name : node.value;
-        if (value === null || value === undefined || value === "") continue;
-        values.push({ field: fieldName, value: String(value), color: node.color || "GRAY" });
+        const v = fieldValue(node);
+        if (!v || !wanted.has(v.field.toLowerCase())) continue;
+        values.push({ field: v.field, value: v.value, color: v.color });
       }
       values.sort((a, b) => fields.findIndex((f) => f.toLowerCase() === a.field.toLowerCase())
         - fields.findIndex((f) => f.toLowerCase() === b.field.toLowerCase()));
@@ -143,6 +166,98 @@ async function fetchFieldValues(issues) {
     }
   }
   return { values: result, created, fields };
+}
+
+// ---------------------------------------------------------------------------
+// Epic kanban: every sub-issue of one issue, with the field values the board groups and orders by
+// ---------------------------------------------------------------------------
+
+const SUB_ISSUE_PAGE = 100;
+const SUB_ISSUE_MAX_PAGES = 5;
+// Whether this GitHub knows the option list of a single-select field: unknown until one query has answered.
+let selectOptionsKnown = null;
+
+function subIssueQuery(ref, cursor, withOptions) {
+  return `{ r: repository(owner: ${JSON.stringify(ref.owner)}, name: ${JSON.stringify(ref.repo)}) {
+    issue(number: ${Number(ref.number)}) {
+      number
+      title
+      subIssues(first: ${SUB_ISSUE_PAGE}${cursor ? `, after: ${JSON.stringify(cursor)}` : ""}) {
+        totalCount
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          number title url state stateReason createdAt
+          repository { nameWithOwner }
+          issueType { name color }
+          assignees(first: 3) { nodes { login avatarUrl } }
+          ${fieldValueFragment(withOptions)}
+        }
+      }
+    }
+  } }`;
+}
+
+async function subIssuePage(token, ref, cursor) {
+  if (selectOptionsKnown !== false) {
+    try {
+      const data = await graphql(token, subIssueQuery(ref, cursor, true), { partial: true });
+      selectOptionsKnown = true;
+      return data;
+    } catch (err) {
+      // Only an unknown `options` selection is worth a second, plainer attempt; anything else is the real answer.
+      if (!/\boptions\b/.test(err.message || "")) throw err;
+      selectOptionsKnown = false;
+    }
+  }
+  return graphql(token, subIssueQuery(ref, cursor, false), { partial: true });
+}
+
+function subIssueItem(node) {
+  const nameWithOwner = node.repository ? node.repository.nameWithOwner : "";
+  const [owner, repo] = nameWithOwner.split("/");
+  const values = [];
+  for (const valueNode of (node.issueFieldValues && node.issueFieldValues.nodes) || []) {
+    const value = fieldValue(valueNode);
+    if (value) values.push(value);
+  }
+  return {
+    key: `${nameWithOwner}#${node.number}`,
+    owner,
+    repo,
+    number: node.number,
+    title: node.title,
+    url: node.url,
+    state: node.state,
+    stateReason: node.stateReason || null,
+    createdAt: node.createdAt,
+    type: node.issueType ? node.issueType.name : null,
+    typeColor: node.issueType ? node.issueType.color : null,
+    assignees: ((node.assignees && node.assignees.nodes) || []).map((a) => ({ login: a.login, avatarUrl: a.avatarUrl })),
+    values
+  };
+}
+
+// All sub-issues of `ref`, paginated, with every field value they carry: the board groups and orders by
+// fields that are not necessarily among the ones configured for badges.
+async function fetchEpic(ref) {
+  const { token, fields } = await getSettings();
+  if (!token) return { error: "NO_TOKEN" };
+  const items = [];
+  let cursor = null;
+  let total = 0;
+  for (let page = 0; page < SUB_ISSUE_MAX_PAGES; page++) {
+    const data = await subIssuePage(token, ref, cursor);
+    const issue = data.r && data.r.issue;
+    if (!issue) return { error: `Issue ${ref.owner}/${ref.repo}#${ref.number} not found or not accessible with this token.` };
+    const connection = issue.subIssues || {};
+    total = connection.totalCount || total;
+    for (const node of connection.nodes || []) {
+      if (node) items.push(subIssueItem(node));
+    }
+    if (!connection.pageInfo || !connection.pageInfo.hasNextPage) break;
+    cursor = connection.pageInfo.endCursor;
+  }
+  return { items, total, fields };
 }
 
 function issueSelection(ref) {
@@ -219,6 +334,9 @@ api.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   }
   if (msg.type === "fetchPullRequests") {
     return reply(fetchPullRequests(msg.pulls || []), sendResponse);
+  }
+  if (msg.type === "fetchEpic") {
+    return reply(fetchEpic(msg.issue), sendResponse);
   }
   if (msg.type === "fetchIssueMeta") {
     return reply(fetchIssueMeta(msg.issue), sendResponse);

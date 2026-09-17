@@ -4,7 +4,9 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- Epic kanban: a List and Kanban toggle above the sub-issues list of an issue draws those sub-issues as a board. The columns come from any field the sub-issues carry, or from their state, type or assignee, and follow the order the organization gave a single-select field's options; the cards inside a column are ordered by the field, number, creation date, title, state, type or assignee you pick, in either direction. Both choices and the toggle are remembered. The board reads up to 500 sub-issues and never writes, so cards cannot be dragged. On by default, one checkbox in the settings turns it off.
 
 ## [2.3.1] - 2026-09-11
 
