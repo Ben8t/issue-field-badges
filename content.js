@@ -10,7 +10,7 @@
   const pending = new Set();
   let scheduled = null;
   let noticeShown = false;
-  let settings = { ageEnabled: false, ageUnit: "months", ageWarnDays: 90, pinsEnabled: true, skipShownFields: true, prAssociation: true, prFork: false, prSize: false, prMergeState: false, kanbanEnabled: true, kanbanDrag: true };
+  let settings = { ageEnabled: false, ageUnit: "months", ageWarnDays: 90, pinsEnabled: true, skipShownFields: true, prAssociation: true, prFork: false, prSize: false, prMergeState: false, kanbanEnabled: true, kanbanDrag: true, sidebarToggle: true };
   const prCache = new Map(); // "owner/repo!n" -> { at, info }
   const prPending = new Set();
   let pins = [];
@@ -302,6 +302,7 @@
     scheduled = null;
     syncPanel();
     syncKanban();
+    syncSidebar();
     scanPulls().catch((err) => console.warn("[github-issue-toolkit]", err));
     const rows = collectRows();
     if (!rows.length) return;
@@ -1197,6 +1198,78 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Issue sidebar: a button that hides the metadata column
+  // ---------------------------------------------------------------------------
+
+  // The metadata column of the issue page, and the flex row holding it next to the issue itself.
+  const SIDEBAR_COLUMN = '[data-testid="issue-viewer-metadata-container"]';
+  const CHEVRON_RIGHT = "M6.22 3.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042L9.94 8 6.22 4.28a.75.75 0 0 1 0-1.06Z";
+  const CHEVRON_LEFT = "M9.78 12.78a.75.75 0 0 1-1.06 0L4.47 8.53a.75.75 0 0 1 0-1.06l4.25-4.25a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042L6.06 8l3.72 3.72a.75.75 0 0 1 0 1.06Z";
+
+  let sidebarCollapsed = false;
+  let railParts = null;
+
+  function chevronIcon(collapsed) {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 16 16");
+    svg.setAttribute("aria-hidden", "true");
+    svg.setAttribute("class", "gsf-sidebar-chevron");
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", collapsed ? CHEVRON_LEFT : CHEVRON_RIGHT);
+    svg.appendChild(path);
+    return svg;
+  }
+
+  function buildRail() {
+    const rail = document.createElement("div");
+    rail.className = "gsf-sidebar-rail";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "gsf-sidebar-toggle";
+    button.addEventListener("click", () => {
+      sidebarCollapsed = !sidebarCollapsed;
+      api.storage.local.set({ sidebarCollapsed });
+      syncSidebar();
+    });
+    rail.appendChild(button);
+    railParts = { rail, button };
+    return rail;
+  }
+
+  function renderRail(sidebar) {
+    const { button } = railParts;
+    button.textContent = "";
+    button.appendChild(chevronIcon(sidebarCollapsed));
+    button.title = sidebarCollapsed ? "Show the issue sidebar" : "Hide the issue sidebar";
+    button.setAttribute("aria-label", button.title);
+    button.setAttribute("aria-expanded", String(!sidebarCollapsed));
+    sidebar.classList.toggle("gsf-sidebar-hidden", sidebarCollapsed);
+  }
+
+  function unmountRail(sidebar) {
+    if (railParts && railParts.rail.isConnected) railParts.rail.remove();
+    if (sidebar) sidebar.classList.remove("gsf-sidebar-hidden");
+  }
+
+  // The button lives in a rail of its own between the issue and the sidebar, so it stays in the same place
+  // whether the sidebar is there or not. Only the wide layout has the two side by side; stacked, it is skipped.
+  function syncSidebar() {
+    const sidebar = refFromPath(location.pathname) ? document.querySelector(SIDEBAR_COLUMN) : null;
+    if (!settings.sidebarToggle || !sidebar || !sidebar.parentElement) {
+      unmountRail(sidebar || document.querySelector(SIDEBAR_COLUMN));
+      return;
+    }
+    const row = getComputedStyle(sidebar.parentElement);
+    if (row.display !== "flex" || row.flexDirection !== "row") {
+      unmountRail(sidebar);
+      return;
+    }
+    if (!railParts) buildRail();
+    if (railParts.rail.nextElementSibling !== sidebar) sidebar.parentElement.insertBefore(railParts.rail, sidebar);
+    renderRail(sidebar);
+  }
+
+  // ---------------------------------------------------------------------------
   // Pinned issues panel
   // ---------------------------------------------------------------------------
 
@@ -1669,7 +1742,7 @@
   }
 
   // Everything this extension adds to the page, so its own mutations never schedule another scan.
-  const OURS = ["gsf-badge", "gsf-badges", "gsf-notice", "gsf-pins", "gsf-pins-header-btn", "gsf-kanban", "gsf-kanban-bar"];
+  const OURS = ["gsf-badge", "gsf-badges", "gsf-notice", "gsf-pins", "gsf-pins-header-btn", "gsf-kanban", "gsf-kanban-bar", "gsf-sidebar-rail"];
   const OURS_SELECTOR = OURS.map((name) => `.${name}`).join(", ");
 
   const observer = new MutationObserver((mutations) => {
@@ -1686,6 +1759,7 @@
   });
   observer.observe(document.documentElement, { childList: true, subtree: true });
   window.addEventListener("popstate", schedule);
+  window.addEventListener("resize", schedule);
 
   api.storage.onChanged.addListener((changes, area) => {
     if (area !== "local") return;
@@ -1700,6 +1774,11 @@
       if (changes.ageUnit) settings.ageUnit = changes.ageUnit.newValue || "months";
       clearBadges();
       schedule();
+    }
+    if (changes.sidebarToggle || changes.sidebarCollapsed) {
+      if (changes.sidebarToggle) settings.sidebarToggle = changes.sidebarToggle.newValue !== false;
+      if (changes.sidebarCollapsed) sidebarCollapsed = changes.sidebarCollapsed.newValue === true;
+      syncSidebar();
     }
     if (changes.kanbanEnabled || changes.kanbanDrag) {
       if (changes.kanbanEnabled) settings.kanbanEnabled = changes.kanbanEnabled.newValue !== false;
@@ -1724,7 +1803,7 @@
     }
   });
 
-  api.storage.local.get(["ageEnabled", "ageUnit", "ageWarnDays", "pinsEnabled", "skipShownFields", "prAssociation", "prFork", "prSize", "prMergeState", "pins", "kanbanEnabled", "kanbanDrag", "kanban"]).then((stored) => {
+  api.storage.local.get(["ageEnabled", "ageUnit", "ageWarnDays", "pinsEnabled", "skipShownFields", "prAssociation", "prFork", "prSize", "prMergeState", "pins", "kanbanEnabled", "kanbanDrag", "kanban", "sidebarToggle", "sidebarCollapsed"]).then((stored) => {
     settings.ageWarnDays = Number.isFinite(Number(stored.ageWarnDays)) && stored.ageWarnDays !== undefined ? Number(stored.ageWarnDays) : 90;
     settings.skipShownFields = stored.skipShownFields !== false;
     settings.prAssociation = stored.prAssociation !== false;
@@ -1736,6 +1815,8 @@
     settings.pinsEnabled = stored.pinsEnabled !== false;
     settings.kanbanEnabled = stored.kanbanEnabled !== false;
     settings.kanbanDrag = stored.kanbanDrag !== false;
+    settings.sidebarToggle = stored.sidebarToggle !== false;
+    sidebarCollapsed = stored.sidebarCollapsed === true;
     kanban = { ...kanban, ...(stored.kanban || {}) };
     pins = Array.isArray(stored.pins) ? stored.pins : [];
     lastHref = null;

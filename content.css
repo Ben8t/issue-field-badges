@@ -502,3 +502,38 @@
 }
 .gsf-kanban-badges .gsf-badge { margin-right: 0; }
 .gsf-kanban-card:hover .gsf-badge { text-decoration: none !important; }
+
+/* Issue sidebar: the rail holding the collapse button, and the hidden metadata column */
+.gsf-sidebar-hidden { display: none !important; }
+.gsf-sidebar-rail {
+  flex: 0 0 auto;
+  align-self: stretch;
+  width: 24px;
+  /* Sit in the gutter GitHub already leaves between the issue and its sidebar, rather than widening it. */
+  margin-left: calc(-1 * var(--stack-gap-spacious, 24px));
+}
+.gsf-sidebar-toggle {
+  position: sticky;
+  top: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: none;
+  color: var(--fgColor-muted);
+  cursor: pointer;
+}
+.gsf-sidebar-toggle:hover {
+  border-color: var(--borderColor-default);
+  background: var(--button-default-bgColor-hover, var(--bgColor-muted));
+  color: var(--fgColor-default);
+}
+.gsf-sidebar-chevron {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+}
