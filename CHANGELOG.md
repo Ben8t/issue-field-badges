@@ -4,9 +4,13 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [2.6.0] - 2026-10-16
+
 ### Added
 
-- A **contributor load** mark next to usernames on issues and pull requests, off by default. An outlined dot is nothing assigned in that organization, a filled dot is at or under the limit you set, and above it a count of assigned issues over open pull requests, filled in when that second number is zero. Hovering it lists what the person holds, each issue with the pull request that closes it, taken from GitHub's own references rather than from closing keywords.
+- A **contributor load** mark next to usernames on issues and pull requests, off by default. An outlined dot is nothing assigned in that organization, a filled dot is at or under the limit you set, and above it a count of assigned issues over open pull requests, filled in when that second number is zero. Hovering it lists what the person holds, each issue with the pull request that closes it, taken from GitHub's own references rather than from closing keywords. A name is only read once the pointer rests on it, and a red outlined dot marks a read that failed.
 
 ## [2.5.0] - 2026-09-24
 
@@ -172,9 +176,11 @@ First release.
 
 - The token is stored with `chrome.storage.local` on the device and is sent only to `https://api.github.com/graphql`. No analytics or third-party services. See [PRIVACY.md](PRIVACY.md).
 
-[Unreleased]: https://github.com/MilosPaunovic/github-issue-toolkit/compare/v2.5.0...HEAD
+[Unreleased]: https://github.com/MilosPaunovic/github-issue-toolkit/compare/v2.6.0...HEAD
+[2.6.0]: https://github.com/MilosPaunovic/github-issue-toolkit/compare/v2.5.0...v2.6.0
 [2.5.0]: https://github.com/MilosPaunovic/github-issue-toolkit/compare/v2.4.2...v2.5.0
 [2.4.2]: https://github.com/MilosPaunovic/github-issue-toolkit/compare/v2.4.1...v2.4.2
+[2.6.0]: https://github.com/MilosPaunovic/github-issue-toolkit/releases/tag/v2.6.0
 [2.5.0]: https://github.com/MilosPaunovic/github-issue-toolkit/releases/tag/v2.5.0
 [2.4.2]: https://github.com/MilosPaunovic/github-issue-toolkit/releases/tag/v2.4.2
 [2.4.1]: https://github.com/MilosPaunovic/github-issue-toolkit/releases/tag/v2.4.1
