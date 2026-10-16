@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [2.7.0] - 2026-10-16
+
 ### Added
 
 - **Address bar search**: type `@gh` and a space in the address bar, then a shortcut name and your words, `@gh repo flow`, to see matching repositories, issues or pull requests as suggestions while you type. Each shortcut set on the settings page has a name, a kind and GitHub qualifiers added to the search, such as `org:acme is:open`, and one shortcut is the default for text that starts with no shortcut name. Each shortcut can carry an optional icon, an emoji for example, shown before its results. A shortcut name typed on its own lists what its qualifiers match at once, most recently updated first. Repository names inside an `org:` or `user:` match on any part of the name, and `#1234` with a `repo:` qualifier goes straight to that item. Enter on the text opens the GitHub search page. Ships with a `repo` (📦) and a `pr` (🔀) shortcut.
@@ -182,10 +186,12 @@ First release.
 
 - The token is stored with `chrome.storage.local` on the device and is sent only to `https://api.github.com/graphql`. No analytics or third-party services. See [PRIVACY.md](PRIVACY.md).
 
-[Unreleased]: https://github.com/MilosPaunovic/github-issue-toolkit/compare/v2.6.0...HEAD
+[Unreleased]: https://github.com/MilosPaunovic/github-issue-toolkit/compare/v2.7.0...HEAD
+[2.7.0]: https://github.com/MilosPaunovic/github-issue-toolkit/compare/v2.6.0...v2.7.0
 [2.6.0]: https://github.com/MilosPaunovic/github-issue-toolkit/compare/v2.5.0...v2.6.0
 [2.5.0]: https://github.com/MilosPaunovic/github-issue-toolkit/compare/v2.4.2...v2.5.0
 [2.4.2]: https://github.com/MilosPaunovic/github-issue-toolkit/compare/v2.4.1...v2.4.2
+[2.7.0]: https://github.com/MilosPaunovic/github-issue-toolkit/releases/tag/v2.7.0
 [2.6.0]: https://github.com/MilosPaunovic/github-issue-toolkit/releases/tag/v2.6.0
 [2.5.0]: https://github.com/MilosPaunovic/github-issue-toolkit/releases/tag/v2.5.0
 [2.4.2]: https://github.com/MilosPaunovic/github-issue-toolkit/releases/tag/v2.4.2
