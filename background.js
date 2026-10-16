@@ -121,8 +121,9 @@ async function fetchFieldValues(issues) {
   if (!token) {
     return { error: "NO_TOKEN" };
   }
+  // Field badges are optional: with nothing to show there is nothing to ask GitHub.
   if (!fields.length && !ageEnabled) {
-    return { error: "NO_FIELDS" };
+    return { values: {}, created: {}, fields };
   }
 
   const byRepo = new Map();
@@ -167,6 +168,486 @@ async function fetchFieldValues(issues) {
     }
   }
   return { values: result, created, fields };
+}
+
+// ---------------------------------------------------------------------------
+// Contributor load: what one person already holds in one organization
+// ---------------------------------------------------------------------------
+
+// Who the token belongs to, so the mark can skip the reader's own name. Held for the life of the
+// worker and read again after it restarts, which is cheap enough not to need storing.
+let viewerLogin = null;
+
+async function viewer() {
+  if (viewerLogin !== null) return viewerLogin;
+  const { token } = await getSettings();
+  if (!token) return "";
+  const data = await graphql(token, "{ viewer { login } }").catch(() => null);
+  viewerLogin = (data && data.viewer && data.viewer.login) || "";
+  return viewerLogin;
+}
+
+const LOAD_ISSUE_SAMPLE = 25;
+const LOAD_PULL_SAMPLE = 50;
+
+// GraphQL knows which issue a pull request actually closes, so the card can say which of the
+// assigned issues is already being worked on instead of guessing from closing keywords in the body.
+async function fetchContributorLoad(ref) {
+  const { token } = await getSettings();
+  if (!token) return { error: "NO_TOKEN" };
+  const org = String((ref && ref.org) || "").trim();
+  const login = String((ref && ref.login) || "").trim();
+  if (!org || !login) return { error: "An organization and a login are both needed." };
+
+  const assigned = JSON.stringify(`org:${org} is:issue is:open assignee:${login}`);
+  const pulls = JSON.stringify(`org:${org} is:pr is:open author:${login}`);
+  const data = await graphql(token, `{
+    assigned: search(query: ${assigned}, type: ISSUE, first: ${LOAD_ISSUE_SAMPLE}) {
+      issueCount
+      nodes { ... on Issue { number title url repository { nameWithOwner } } }
+    }
+    pulls: search(query: ${pulls}, type: ISSUE, first: ${LOAD_PULL_SAMPLE}) {
+      issueCount
+      nodes {
+        ... on PullRequest {
+          number url
+          closingIssuesReferences(first: 10) { nodes { number repository { nameWithOwner } } }
+        }
+      }
+    }
+  }`, { partial: true });
+
+  const closes = new Map();
+  for (const pull of (data.pulls && data.pulls.nodes) || []) {
+    if (!pull) continue;
+    for (const issue of (pull.closingIssuesReferences && pull.closingIssuesReferences.nodes) || []) {
+      if (!issue || !issue.repository) continue;
+      const key = `${issue.repository.nameWithOwner}#${issue.number}`;
+      if (!closes.has(key)) closes.set(key, { number: pull.number, url: pull.url });
+    }
+  }
+
+  const items = [];
+  for (const issue of (data.assigned && data.assigned.nodes) || []) {
+    if (!issue || !issue.repository) continue;
+    const key = `${issue.repository.nameWithOwner}#${issue.number}`;
+    items.push({
+      key,
+      repo: issue.repository.nameWithOwner.split("/")[1] || issue.repository.nameWithOwner,
+      number: issue.number,
+      title: issue.title,
+      url: issue.url,
+      pull: closes.get(key) || null
+    });
+  }
+
+  return {
+    assigned: (data.assigned && data.assigned.issueCount) || 0,
+    pulls: (data.pulls && data.pulls.issueCount) || 0,
+    items
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Address bar search: `@gh <shortcut> <words>`, each shortcut a kind of item and GitHub qualifiers
+// ---------------------------------------------------------------------------
+
+// Used until the settings page saves a list of its own, so the keyword works right after installing.
+const DEFAULT_SHORTCUTS = [
+  { name: "repo", icon: "📦", kind: "repo", query: "" },
+  { name: "pr", icon: "🔀", kind: "pr", query: "is:open" }
+];
+const SEARCH_KINDS = {
+  repo: { label: "Repositories", type: "repositories", qualifier: "" },
+  issue: { label: "Issues", type: "issues", qualifier: "is:issue" },
+  pr: { label: "Pull requests", type: "pullrequests", qualifier: "is:pr" }
+};
+const SEARCH_LIMIT = 8;
+const OWNER_REPOS_TTL_MS = 10 * 60 * 1000;
+const OWNER_REPOS_PAGES = 5;
+const OPEN_SETTINGS = "github-issue-toolkit:settings";
+// Chrome reads suggestion descriptions as XML with a few highlight tags; Firefox shows them as typed.
+const RICH_SUGGESTIONS = !api.runtime.getURL("").startsWith("moz-extension:");
+
+async function searchSettings() {
+  const stored = await api.storage.local.get(["token", "searchShortcuts", "searchDefault"]);
+  const saved = Array.isArray(stored.searchShortcuts)
+    ? stored.searchShortcuts.filter((s) => s && s.name && SEARCH_KINDS[s.kind])
+    : [];
+  const shortcuts = saved.length ? saved : DEFAULT_SHORTCUTS;
+  const wanted = String(stored.searchDefault || "").toLowerCase();
+  return {
+    token: (stored.token || "").trim(),
+    shortcuts,
+    fallback: shortcuts.find((s) => s.name.toLowerCase() === wanted) || shortcuts[0]
+  };
+}
+
+// The first word picks a shortcut when it is one's name; otherwise the whole text goes to the default.
+function parseSearch(text, shortcuts, fallback) {
+  const trimmed = String(text || "").trim();
+  const [first, ...rest] = trimmed.split(/\s+/);
+  const named = first && shortcuts.find((s) => s.name.toLowerCase() === first.toLowerCase());
+  if (named) return { shortcut: named, words: rest.join(" "), named: true };
+  return { shortcut: fallback, words: trimmed, named: false };
+}
+
+function searchQuery(shortcut, words) {
+  return [words, shortcut.query, SEARCH_KINDS[shortcut.kind].qualifier].filter(Boolean).join(" ").trim();
+}
+
+function searchPageUrl(shortcut, words) {
+  const query = searchQuery(shortcut, words);
+  if (!query) return "https://github.com/search";
+  return `https://github.com/search?q=${encodeURIComponent(query)}&type=${SEARCH_KINDS[shortcut.kind].type}`;
+}
+
+// Chrome refuses the whole list when one description is not valid XML, so the characters XML does not
+// allow, which issue titles do carry now and then, are dropped before escaping.
+const NOT_XML = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+
+function escapeXml(text) {
+  return String(text).replace(NOT_XML, "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" })[c]);
+}
+
+// parts: [[text, tag]], the tag being match, dim, url or nothing.
+function describe(parts) {
+  return parts
+    .filter(([text]) => text)
+    .map(([text, tag]) => (RICH_SUGGESTIONS && tag ? `<${tag}>${escapeXml(text)}</${tag}>` : RICH_SUGGESTIONS ? escapeXml(text) : text))
+    .join(" ");
+}
+
+function shortcutSummary(shortcut, fallback) {
+  const kind = SEARCH_KINDS[shortcut.kind].label;
+  return `${shortcut.query ? `${kind} in ${shortcut.query}` : kind}${shortcut === fallback ? " (default)" : ""}`;
+}
+
+// Every repository of an owner, newest push first, kept for ten minutes: GitHub search matches whole
+// words only, so `app` finds `webapp` through this list and not through search. The worker is stopped
+// after a short idle time, so the list is also kept in session storage, which lives in memory only.
+const ownerRepoCache = new Map();
+const sessionStore = api.storage.session || null;
+
+function fresh(entry) {
+  return entry && Date.now() - entry.at < OWNER_REPOS_TTL_MS;
+}
+
+// The list when it is already known, without waiting: what each keystroke can show at once.
+function cachedRepos(owner) {
+  const hit = ownerRepoCache.get(owner.toLowerCase());
+  return fresh(hit) && hit.list ? hit.list : null;
+}
+
+async function readOwnerRepos(token, owner) {
+  const storeKey = `repoList:${owner.toLowerCase()}`;
+  const stored = sessionStore ? (await sessionStore.get(storeKey))[storeKey] : null;
+  if (fresh(stored)) return stored;
+  const list = [];
+  let cursor = null;
+  for (let page = 0; page < OWNER_REPOS_PAGES; page++) {
+    const data = await graphql(token, `{ o: repositoryOwner(login: ${JSON.stringify(owner)}) {
+      repositories(first: 100, orderBy: { field: PUSHED_AT, direction: DESC }${cursor ? `, after: ${JSON.stringify(cursor)}` : ""}) {
+        pageInfo { hasNextPage endCursor }
+        nodes { nameWithOwner description url pushedAt }
+      }
+    } }`);
+    const connection = data.o && data.o.repositories;
+    if (!connection) break;
+    list.push(...(connection.nodes || []).filter(Boolean));
+    if (!connection.pageInfo || !connection.pageInfo.hasNextPage) break;
+    cursor = connection.pageInfo.endCursor;
+  }
+  const entry = { at: Date.now(), list };
+  if (sessionStore) sessionStore.set({ [storeKey]: entry }).catch(() => {});
+  return entry;
+}
+
+function ownerRepos(token, owner) {
+  const key = owner.toLowerCase();
+  const hit = ownerRepoCache.get(key);
+  if (fresh(hit)) return hit.repos;
+  const repos = readOwnerRepos(token, owner).then((entry) => {
+    ownerRepoCache.set(key, { at: entry.at, repos, list: entry.list });
+    return entry.list;
+  });
+  ownerRepoCache.set(key, { at: Date.now(), repos });
+  // A failed read is not kept, so the next keystroke asks again.
+  repos.catch(() => ownerRepoCache.delete(key));
+  return repos;
+}
+
+function repoOwners(shortcut) {
+  return [...shortcut.query.matchAll(/(?:^|\s)(?:org|user):(\S+)/g)].map((m) => m[1]);
+}
+
+const NO_MATCH = 4;
+
+// Lower is better: the name itself, then a name that starts with the words, then one where they start a
+// part of it (`kafka` in `plugin-kafka`), then anywhere in it. Words with a slash are matched against
+// `owner/name`, and several words read as one name, `plugin kafka` as `plugin-kafka`.
+function repoRank(repo, needle) {
+  if (!needle) return 0;
+  const full = repo.nameWithOwner.toLowerCase();
+  const name = needle.includes("/") ? full : full.slice(full.indexOf("/") + 1);
+  if (name === needle) return 0;
+  if (name.startsWith(needle)) return 1;
+  const at = name.indexOf(needle);
+  if (at > 0 && /[-_./]/.test(name[at - 1])) return 2;
+  return at >= 0 ? 3 : NO_MATCH;
+}
+
+// Best rank first, then the shorter name, which is the closer one, then the order the repositories came
+// in: the most recently pushed first for the owner's list, followed by GitHub search's own order.
+// With no words there is nothing to be close to, so the list keeps that order, newest push first.
+// GitHub search also matches descriptions, so its results are kept even when the name does not match.
+function rankRepos(repos, words, { keepSearched = false } = {}) {
+  const needle = words.trim().toLowerCase().replace(/\s+/g, "-");
+  return repos
+    .map((repo, order) => ({ repo, order, rank: repoRank(repo, needle), length: needle ? repo.nameWithOwner.length : 0 }))
+    .filter((r) => r.rank < NO_MATCH || (keepSearched && r.repo.searched))
+    .sort((a, b) => a.rank - b.rank || a.length - b.length || a.order - b.order)
+    .map((r) => r.repo);
+}
+
+// A search still unanswered after this long is reported as such, instead of leaving the old rows in place.
+const SEARCH_TIMEOUT_MS = 10 * 1000;
+
+function timedGraphql(token, query) {
+  let timer;
+  return Promise.race([
+    graphql(token, query, { partial: true }),
+    new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("GitHub did not answer in time")), SEARCH_TIMEOUT_MS); })
+  ]).finally(() => clearTimeout(timer));
+}
+
+// A repository search made again within a short while, a word typed and erased, reuses the answer instead
+// of asking GitHub twice. Issues and pull requests change too often for that and are always asked again.
+const RECENT_SEARCH_MS = 30 * 1000;
+const recentSearches = new Map();
+
+function cachedGraphql(token, query) {
+  const now = Date.now();
+  for (const [key, hit] of recentSearches) if (now - hit.at > RECENT_SEARCH_MS) recentSearches.delete(key);
+  const hit = recentSearches.get(query);
+  if (hit) return hit.data;
+  const data = timedGraphql(token, query);
+  recentSearches.set(query, { at: now, data });
+  data.catch(() => recentSearches.delete(query));
+  return data;
+}
+
+function repoSearchRequest(shortcut, words) {
+  const query = searchQuery(shortcut, words);
+  return query ? `{ s: search(query: ${JSON.stringify(query)}, type: REPOSITORY, first: ${SEARCH_LIMIT}) {
+    nodes { ... on Repository { nameWithOwner description url pushedAt } }
+  } }` : null;
+}
+
+function itemSearchRequest(shortcut, words) {
+  // A shortcut on its own lists what its qualifiers match, the most recently updated first.
+  const query = words ? searchQuery(shortcut, words) : `${searchQuery(shortcut, words)} sort:updated-desc`;
+  const parts = [`s: search(query: ${JSON.stringify(query)}, type: ISSUE, first: ${SEARCH_LIMIT}) { nodes { ${ITEM_SELECTION} } }`];
+  // `#1234` or a bare number, with a single repo: qualifier, goes straight to that item.
+  const number = /^#?(\d+)$/.exec(words);
+  const repos = [...shortcut.query.matchAll(/(?:^|\s)repo:([^/\s]+)\/(\S+)/g)];
+  if (number && repos.length === 1) {
+    parts.push(`n: repository(owner: ${JSON.stringify(repos[0][1])}, name: ${JSON.stringify(repos[0][2])}) {
+      issueOrPullRequest(number: ${Number(number[1])}) { ${ITEM_SELECTION} }
+    }`);
+  }
+  return `{ ${parts.join("\n")} }`;
+}
+
+// How long ago, in the largest unit that fits: `5m ago`, `3h ago`, `4d ago`, `2mo ago`, `1y ago`.
+function ago(iso) {
+  const seconds = (Date.now() - Date.parse(iso)) / 1000;
+  if (!Number.isFinite(seconds)) return "";
+  const units = [[365 * 86400, "y"], [30 * 86400, "mo"], [86400, "d"], [3600, "h"], [60, "m"]];
+  for (const [size, unit] of units) if (seconds >= size) return `${Math.floor(seconds / size)}${unit} ago`;
+  return "just now";
+}
+
+// Chrome draws the same magnifier before every extension suggestion and offers no icon of its own, so
+// the optional icon of a shortcut, an emoji for example, is the first character of the text instead.
+function repoSuggestion(repo, icon) {
+  const details = [repo.description, repo.pushedAt && `pushed ${ago(repo.pushedAt)}`].filter(Boolean).join(" · ");
+  return { content: repo.url, description: describe([[icon, ""], [repo.nameWithOwner, "match"], [details, "dim"]]) };
+}
+
+function itemSuggestion(item, icon) {
+  const ref = `${item.repository.nameWithOwner}#${item.number}`;
+  const state = item.isDraft ? "draft" : String(item.state || "").toLowerCase();
+  const details = [state, item.author && item.author.login, item.updatedAt && `updated ${ago(item.updatedAt)}`].filter(Boolean).join(" · ");
+  return { content: item.url, description: describe([[icon, ""], [ref, "url"], [item.title, "match"], [details, "dim"]]) };
+}
+
+// Chrome drops suggestions that come too long after the keystroke, so a repository list still being read
+// is not waited for: GitHub search answers this keystroke, and the list serves the next ones.
+async function searchRepos(token, shortcut, words) {
+  const owners = repoOwners(shortcut);
+  owners.forEach((owner) => ownerRepos(token, owner).catch(() => {}));
+  const local = Promise.resolve(rankRepos(owners.map(cachedRepos).filter(Boolean).flat(), words));
+  const request = repoSearchRequest(shortcut, words);
+  const remote = request
+    ? cachedGraphql(token, request).then((data) => ((data.s && data.s.nodes) || []).filter((n) => n && n.url))
+    : Promise.resolve([]);
+  const [found, searched] = await Promise.all([local, remote]);
+  const merged = [...found, ...searched.map((repo) => ({ ...repo, searched: true }))];
+  return repoSuggestions(rankRepos(merged, words, { keepSearched: true }), shortcut.icon);
+}
+
+function repoSuggestions(repos, icon) {
+  const seen = new Set();
+  return repos
+    .filter((repo) => !seen.has(repo.url) && seen.add(repo.url))
+    .slice(0, SEARCH_LIMIT)
+    .map((repo) => repoSuggestion(repo, icon));
+}
+
+const ITEM_SELECTION = `
+  ... on Issue { number title url state updatedAt author { login } repository { nameWithOwner } }
+  ... on PullRequest { number title url state isDraft updatedAt author { login } repository { nameWithOwner } }`;
+
+async function searchItems(token, shortcut, words) {
+  const data = await timedGraphql(token, itemSearchRequest(shortcut, words));
+  const direct = data.n && data.n.issueOrPullRequest;
+  const seen = new Set();
+  return [direct, ...((data.s && data.s.nodes) || [])]
+    .filter((item) => item && item.url && !seen.has(item.url) && seen.add(item.url))
+    .slice(0, SEARCH_LIMIT)
+    .map((item) => itemSuggestion(item, shortcut.icon));
+}
+
+function shortcutSuggestions(typed, shortcuts, fallback) {
+  // While the first word is still being typed, the shortcuts it could become come first; one already
+  // typed in full is not offered again, its results follow.
+  if (/\s/.test(typed)) return [];
+  const prefix = typed.toLowerCase();
+  return shortcuts
+    .filter((shortcut) => shortcut.name.toLowerCase().startsWith(prefix) && shortcut.name.toLowerCase() !== prefix)
+    .map((shortcut) => ({ content: `${shortcut.name} `, description: describe([[shortcut.icon, ""], [shortcut.name, "match"], [shortcutSummary(shortcut, fallback), "dim"]]) }));
+}
+
+// What can be answered on the keystroke itself: repository names from a list already read. Null when the
+// lists are not read yet or match nothing, and GitHub search has to be asked.
+function instantSuggestions(text, { token, shortcuts, fallback }) {
+  const typed = String(text || "").trim();
+  const { shortcut, words } = parseSearch(typed, shortcuts, fallback);
+  if (!token || shortcut.kind !== "repo") return null;
+  const lists = repoOwners(shortcut).map(cachedRepos);
+  if (!lists.length || lists.includes(null)) return null;
+  const found = rankRepos(lists.flat(), words);
+  if (!found.length) return null;
+  return [...shortcutSuggestions(typed, shortcuts, fallback), ...repoSuggestions(found, shortcut.icon)];
+}
+
+// Whether the text is worth a request: some words, or a shortcut name on its own with something to search.
+function needsSearch({ shortcut, words, named }) {
+  if (!words && !named) return false;
+  return Boolean(searchQuery(shortcut, words)) || (shortcut.kind === "repo" && repoOwners(shortcut).length > 0);
+}
+
+// The first row, the one Enter runs.
+function defaultDescription({ shortcut, words }) {
+  const scope = `${SEARCH_KINDS[shortcut.kind].label.toLowerCase()}${shortcut.query ? ` in ${shortcut.query}` : ""}`;
+  return words
+    ? describe([[`Search ${scope} for`, ""], [words, "match"]])
+    : describe([[`Search ${scope} on GitHub`, ""]]);
+}
+
+async function searchSuggestions(text, { token, shortcuts, fallback }) {
+  const typed = String(text || "").trim();
+  const suggestions = shortcutSuggestions(typed, shortcuts, fallback);
+  const { shortcut, words, named } = parseSearch(typed, shortcuts, fallback);
+  if (!needsSearch({ shortcut, words, named })) return suggestions;
+  if (!token) {
+    suggestions.push({ content: OPEN_SETTINGS, description: describe([["Add a token in the extension settings to see results here", "dim"]]) });
+    return suggestions;
+  }
+  try {
+    const found = shortcut.kind === "repo"
+      ? await searchRepos(token, shortcut, words)
+      : await searchItems(token, shortcut, words);
+    suggestions.push(...found);
+  } catch (err) {
+    suggestions.push({ content: OPEN_SETTINGS, description: describe([[`GitHub search failed: ${err.message || err}`, "dim"]]) });
+  }
+  return suggestions;
+}
+
+if (api.omnibox) {
+  let latestInput = 0;
+
+  // Reading the repository lists starts with the keyword, before the first word is typed.
+  api.omnibox.onInputStarted.addListener(async () => {
+    const { token, shortcuts } = await searchSettings();
+    if (!token) return;
+    for (const shortcut of shortcuts) {
+      if (shortcut.kind === "repo") repoOwners(shortcut).forEach((owner) => ownerRepos(token, owner).catch(() => {}));
+    }
+  });
+
+  // Chrome takes one list of suggestions per keystroke and silently ignores any later one, and changing
+  // the first row while GitHub is asked makes it ignore the list that follows as well. So each keystroke
+  // sets its first row and sends its list once, together, and the omnibox shows no "searching" state.
+  api.omnibox.onInputChanged.addListener(async (text, suggest) => {
+    const input = ++latestInput;
+    const current = await searchSettings();
+    if (input !== latestInput) return;
+    const typed = String(text || "").trim();
+    const parsed = parseSearch(typed, current.shortcuts, current.fallback);
+    const finish = async (suggestions) => {
+      // Chrome reads this text asynchronously; the list sent before it is taken would show the old one.
+      try {
+        await api.omnibox.setDefaultSuggestion({ description: defaultDescription(parsed) });
+      } catch (err) {
+        console.error("GitHub Issue Toolkit: address bar first row refused", err);
+      }
+      if (input !== latestInput) return;
+      try {
+        suggest(suggestions);
+      } catch (err) {
+        // A description Chrome cannot read would leave the old rows in place; plain text always reads.
+        console.error("GitHub Issue Toolkit: address bar suggestions refused", err, suggestions);
+        suggest(suggestions.map((s) => ({ content: s.content, description: s.description.replace(/<[^>]*>/g, "") })));
+      }
+    };
+
+    if (!current.token || !needsSearch(parsed)) {
+      // Nothing to ask GitHub, so the shortcut list is all there is to show.
+      const hint = !current.token && needsSearch(parsed)
+        ? [{ content: OPEN_SETTINGS, description: describe([["Add a token in the extension settings to see results here", "dim"]]) }]
+        : [];
+      return finish([...shortcutSuggestions(typed, current.shortcuts, current.fallback), ...hint]);
+    }
+    const instant = instantSuggestions(typed, current);
+    if (instant) return finish(instant);
+
+    // No pause before asking: Chrome drops suggestions that come too long after the keystroke. A newer
+    // keystroke still wins, the answer to an older one is thrown away.
+    const suggestions = await searchSuggestions(typed, current).catch((err) => {
+      console.error("GitHub Issue Toolkit: address bar search failed", err);
+      return [{ content: OPEN_SETTINGS, description: describe([[`GitHub search failed: ${err.message || err}`, "dim"]]) }];
+    });
+    if (input === latestInput) finish(suggestions);
+  });
+
+  api.omnibox.onInputEntered.addListener(async (text, disposition) => {
+    if (text === OPEN_SETTINGS) {
+      api.runtime.openOptionsPage();
+      return;
+    }
+    let url = text.trim();
+    if (!/^https:\/\/github\.com\//.test(url)) {
+      const { shortcuts, fallback } = await searchSettings();
+      const { shortcut, words } = parseSearch(text, shortcuts, fallback);
+      url = searchPageUrl(shortcut, words);
+    }
+    if (disposition === "newForegroundTab") api.tabs.create({ url });
+    else if (disposition === "newBackgroundTab") api.tabs.create({ url, active: false });
+    else api.tabs.update({ url });
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -378,6 +859,12 @@ api.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === "fetchPullRequests") {
     return reply(fetchPullRequests(msg.pulls || []), sendResponse);
   }
+  if (msg.type === "viewerLogin") {
+    return reply(viewer().then((login) => ({ login })), sendResponse);
+  }
+  if (msg.type === "fetchContributorLoad") {
+    return reply(fetchContributorLoad(msg.contributor), sendResponse);
+  }
   if (msg.type === "fetchEpic") {
     return reply(fetchEpic(msg.issue), sendResponse);
   }
@@ -400,6 +887,7 @@ api.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       const token = String(msg.token || "").trim();
       if (!token) return { error: "No token given" };
       const data = await graphql(token, "{ viewer { login } }");
+      viewerLogin = null;
       return { login: data.viewer && data.viewer.login };
     })(), sendResponse);
   }

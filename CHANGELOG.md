@@ -8,6 +8,22 @@ All notable changes to this project are documented here. The format follows [Kee
 
 - An optional setting, off by default, hides GitHub's **Projects** section of the issue sidebar on every issue, leaving the rest of the sidebar in place. The issue stays in its projects; only the box is hidden.
 
+## [2.7.0] - 2026-10-16
+
+### Added
+
+- **Address bar search**: type `@gh` and a space in the address bar, then a shortcut name and your words, `@gh repo flow`, to see matching repositories, issues or pull requests as suggestions while you type. Each shortcut set on the settings page has a name, a kind and GitHub qualifiers added to the search, such as `org:acme is:open`, and one shortcut is the default for text that starts with no shortcut name. Each shortcut can carry an optional icon, an emoji for example, shown before its results. A shortcut name typed on its own lists what its qualifiers match at once, most recently updated first. Repository names inside an `org:` or `user:` match on any part of the name, and `#1234` with a `repo:` qualifier goes straight to that item. Enter on the text opens the GitHub search page. Ships with a `repo` (📦) and a `pr` (🔀) shortcut.
+
+### Changed
+
+- The field list is optional. With no field and the age badge off, sub-issue lists and project views no longer show a notice asking for one, the settings page saves without a warning, and no request is made for field values.
+
+## [2.6.0] - 2026-10-16
+
+### Added
+
+- A **contributor load** mark next to usernames on issues and pull requests, off by default. An outlined dot is nothing assigned in that organization, a filled dot is at or under the limit you set, and above it a count of assigned issues over open pull requests, filled in when that second number is zero. Hovering it lists what the person holds, each issue with the pull request that closes it, taken from GitHub's own references rather than from closing keywords. A name is only read once the pointer rests on it, and a red outlined dot marks a read that failed.
+
 ## [2.5.0] - 2026-09-24
 
 ### Added
@@ -172,9 +188,13 @@ First release.
 
 - The token is stored with `chrome.storage.local` on the device and is sent only to `https://api.github.com/graphql`. No analytics or third-party services. See [PRIVACY.md](PRIVACY.md).
 
-[Unreleased]: https://github.com/MilosPaunovic/github-issue-toolkit/compare/v2.5.0...HEAD
+[Unreleased]: https://github.com/MilosPaunovic/github-issue-toolkit/compare/v2.7.0...HEAD
+[2.7.0]: https://github.com/MilosPaunovic/github-issue-toolkit/compare/v2.6.0...v2.7.0
+[2.6.0]: https://github.com/MilosPaunovic/github-issue-toolkit/compare/v2.5.0...v2.6.0
 [2.5.0]: https://github.com/MilosPaunovic/github-issue-toolkit/compare/v2.4.2...v2.5.0
 [2.4.2]: https://github.com/MilosPaunovic/github-issue-toolkit/compare/v2.4.1...v2.4.2
+[2.7.0]: https://github.com/MilosPaunovic/github-issue-toolkit/releases/tag/v2.7.0
+[2.6.0]: https://github.com/MilosPaunovic/github-issue-toolkit/releases/tag/v2.6.0
 [2.5.0]: https://github.com/MilosPaunovic/github-issue-toolkit/releases/tag/v2.5.0
 [2.4.2]: https://github.com/MilosPaunovic/github-issue-toolkit/releases/tag/v2.4.2
 [2.4.1]: https://github.com/MilosPaunovic/github-issue-toolkit/releases/tag/v2.4.1
